@@ -297,7 +297,7 @@ func newConn(conn net.Conn, isServer bool, readBufferSize, writeBufferSize int, 
 		writeBufferSize = defaultWriteBufferSize
 	}
 	writeBufferSize += maxFrameHeaderSize
-
+	writeBufferSize += 4		// add msgtype felnd 2020/07/30
 	if writeBuf == nil && writeBufferPool == nil {
 		writeBuf = make([]byte, writeBufferSize)
 	}
@@ -746,6 +746,44 @@ func (c *Conn) WritePreparedMessage(pm *PreparedMessage) error {
 	return err
 }
 
+// WriteMessageWithCustomMsgType: base on WriteMessage, and write msgtype to first 4 bytes
+func (c *Conn) WriteMessageWithCustomMsgType(messageType int, customMsgType int32, data []byte) error{
+	if c.isServer && (c.newCompressionWriter == nil || !c.enableWriteCompression) {
+		// Fast path with no allocations and single frame.
+
+		var mw messageWriter
+		if err := c.beginMessage(&mw, messageType); err != nil {
+			return err
+		}
+		// << add customMsgType felnd 2020/07/30
+		customMsgTypeBuf := make([]byte, 4)
+		binary.LittleEndian.PutUint32(customMsgTypeBuf, uint32(customMsgType))
+		n := copy(c.writeBuf[mw.pos:], customMsgTypeBuf)
+		mw.pos += n
+		// end >>
+		n = copy(c.writeBuf[mw.pos:], data)
+		mw.pos += n
+		data = data[n:]
+		return mw.flushFrame(true, data)
+	}
+
+	w, err := c.NextWriter(messageType)
+	if err != nil {
+		return err
+	}
+	// << add customMsgType felnd 2020/07/30
+	customMsgTypeBuf := make([]byte, 4)
+	binary.LittleEndian.PutUint32(customMsgTypeBuf, uint32(customMsgType))
+	if _, err = w.Write(customMsgTypeBuf); err != nil {
+		return err
+	}
+	// end >>
+	if _, err = w.Write(data); err != nil {
+		return err
+	}
+	return w.Close()
+}
+
 // WriteMessage is a helper method for getting a writer using NextWriter,
 // writing the message and closing the writer.
 func (c *Conn) WriteMessage(messageType int, data []byte) error {
@@ -1055,6 +1093,19 @@ func (r *messageReader) Read(b []byte) (int, error) {
 
 func (r *messageReader) Close() error {
 	return nil
+}
+
+// ReadMessageWithCustomMsgType base on ReadMessage, and get customMsgType from first 4 bytes
+func (c *Conn) ReadMessageWithCustomMsgType()(messageType int, customMsgType int32, p []byte, err error){
+	var r io.Reader
+	messageType, r, err = c.NextReader()
+	if err != nil {
+		return messageType, -1, nil, err
+	}
+	p, err = ioutil.ReadAll(r)
+	// get custmonMsgType felnd 2020/07/30
+	custmonMsgType := int32(binary.LittleEndian.Uint32(p[0:4]))
+	return messageType, custmonMsgType, p[4:], err
 }
 
 // ReadMessage is a helper method for getting a reader using NextReader and
