@@ -746,8 +746,15 @@ func (c *Conn) WritePreparedMessage(pm *PreparedMessage) error {
 	return err
 }
 
-// WriteMessageWithCustomMsgType: base on WriteMessage, and write msgtype to first 4 bytes
+// WriteMessageWithCustomMsgType: base on WriteMessage,
+// and write msgtype to first 4 bytes
+// only for messageType = websocket.BinaryMessage
 func (c *Conn) WriteMessageWithCustomMsgType(messageType int, customMsgType int32, data []byte) error{
+	// if not BinaryMessage use raw WriteMessage
+	if (messageType != BinaryMessage){
+		return c.WriteMessage(messageType, data)
+	}
+
 	if c.isServer && (c.newCompressionWriter == nil || !c.enableWriteCompression) {
 		// Fast path with no allocations and single frame.
 
@@ -1103,9 +1110,18 @@ func (c *Conn) ReadMessageWithCustomMsgType()(messageType int, customMsgType int
 		return messageType, -1, nil, err
 	}
 	p, err = ioutil.ReadAll(r)
-	// get custmonMsgType felnd 2020/07/30
-	custmonMsgType := int32(binary.LittleEndian.Uint32(p[0:4]))
-	return messageType, custmonMsgType, p[4:], err
+	var custmonMsgType int32
+	var data []byte
+	if messageType == BinaryMessage{
+		// get custmonMsgType felnd 2020/07/30
+		custmonMsgType = int32(binary.LittleEndian.Uint32(p[0:4]))
+		data = p[4:]
+	}else{
+		custmonMsgType = 0
+		data = p
+	}
+
+	return messageType, custmonMsgType, data, err
 }
 
 // ReadMessage is a helper method for getting a reader using NextReader and
